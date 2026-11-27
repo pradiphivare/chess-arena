@@ -1,6 +1,6 @@
 # Chess Arena
 
-Chess Arena is an offline React Native and Expo chess game. Play a complete chess match on one device, either casually or with a friend taking turns and passing the phone. Friend mode lets you enter player names; it does not require an account or internet connection. Online multiplayer is not included.
+Chess Arena is an offline React Native and Expo chess game. Enter a player name, then choose a local friend match or play against the computer at Easy, Moderate, or Hard difficulty.
 
 ## Run in Expo Go
 
@@ -17,9 +17,9 @@ For an Android emulator, run `npm run android`. For an iOS simulator, run `npm r
 
 ## Play
 
-- Select **Quick game** for a local game, or **2 friends** to enter names and pass the same device between players.
-- Tap a piece to see legal moves, then tap a highlighted square.
-- Use **Undo**, **Flip**, and **New game** as needed.
-- When a pawn reaches the last rank, choose its promotion piece.
+1. Enter a display name. This is a local profile for the game, not a password-based account or online sign-in.
+2. Choose **Play with a friend** to pass the device between two local players, or choose **Play with computer**.
+3. For computer games, choose Easy (random legal moves), Moderate (two-ply material search), or Hard (three-ply material search). You play White and the computer plays Black.
+4. Tap a piece to see its legal moves, then tap a highlighted square. Use Undo, Flip, and Restart as needed; choose a piece when promoting a pawn.
 
-The rules engine handles castling, en passant, check, checkmate, stalemate, repetition, and draws. Run `npm run typecheck` to check TypeScript, or `npm run doctor` to check the Expo project setup.
+The rules engine handles castling, en passant, check, checkmate, stalemate, repetition, and draws. Games are local and work offline; online multiplayer and server-backed accounts are not included. Run `npm run typecheck` to check TypeScript, or `npm run doctor` to check the Expo project setup.

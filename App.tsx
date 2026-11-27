@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Modal,
   Pressable,
@@ -13,7 +13,9 @@ import {
 import { Chess, type Square } from 'chess.js';
 
 type Promotion = 'q' | 'r' | 'b' | 'n';
-type PlayerMode = 'casual' | 'friends';
+type PlayerMode = 'friends' | 'computer';
+type Difficulty = 'easy' | 'moderate' | 'hard';
+type Screen = 'login' | 'setup' | 'game';
 
 const FILES = 'abcdefgh';
 const PIECES: Record<string, string> = {
@@ -26,6 +28,7 @@ const PROMOTIONS: { value: Promotion; label: string; icon: string }[] = [
   { value: 'b', label: 'Bishop', icon: '♗' },
   { value: 'n', label: 'Knight', icon: '♘' },
 ];
+const PIECE_VALUE: Record<string, number> = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 0 };
 
 function getStatus(game: Chess) {
   if (game.isCheckmate()) return { title: `${game.turn() === 'w' ? 'Black' : 'White'} wins`, detail: 'Checkmate. Brilliant finish.', ended: true };
@@ -41,18 +44,82 @@ function getStatus(game: Chess) {
   };
 }
 
+// Positive scores favor Black, negative scores favor White. Search is local
+// and bounded to a few plies so even the hardest level stays phone-friendly.
+function evaluatePosition(game: Chess): number {
+  if (game.isCheckmate()) return game.turn() === 'b' ? 100000 : -100000;
+  if (game.isDraw()) return 0;
+  let score = 0;
+  for (const row of game.board()) {
+    for (const piece of row) {
+      if (!piece) continue;
+      const value = PIECE_VALUE[piece.type];
+      score += piece.color === 'b' ? value : -value;
+    }
+  }
+  return score;
+}
+
+function minimax(game: Chess, depth: number, alpha: number, beta: number): number {
+  if (depth === 0 || game.isGameOver()) return evaluatePosition(game);
+  const moves = game.moves({ verbose: true });
+  if (game.turn() === 'b') {
+    let best = -Infinity;
+    for (const move of moves) {
+      const next = new Chess(game.fen());
+      next.move({ from: move.from, to: move.to, promotion: move.promotion ?? 'q' });
+      best = Math.max(best, minimax(next, depth - 1, alpha, beta));
+      alpha = Math.max(alpha, best);
+      if (beta <= alpha) break;
+    }
+    return best;
+  }
+  let best = Infinity;
+  for (const move of moves) {
+    const next = new Chess(game.fen());
+    next.move({ from: move.from, to: move.to, promotion: move.promotion ?? 'q' });
+    best = Math.min(best, minimax(next, depth - 1, alpha, beta));
+    beta = Math.min(beta, best);
+    if (beta <= alpha) break;
+  }
+  return best;
+}
+
+function chooseComputerMove(game: Chess, difficulty: Difficulty) {
+  const moves = game.moves({ verbose: true });
+  if (!moves.length) return null;
+  if (difficulty === 'easy') return moves[Math.floor(Math.random() * moves.length)];
+  const depth = difficulty === 'moderate' ? 2 : 3;
+  let bestScore = -Infinity;
+  let bestMoves = [moves[0]];
+  for (const move of moves) {
+    const next = new Chess(game.fen());
+    next.move({ from: move.from, to: move.to, promotion: move.promotion ?? 'q' });
+    const score = minimax(next, depth - 1, -Infinity, Infinity);
+    if (score > bestScore) {
+      bestScore = score;
+      bestMoves = [move];
+    } else if (score === bestScore) {
+      bestMoves.push(move);
+    }
+  }
+  return bestMoves[Math.floor(Math.random() * bestMoves.length)];
+}
+
 export default function App() {
   const { width } = useWindowDimensions();
-  // Leave room for the card padding as well as the screen gutter, so the board
-  // never gets clipped on narrow Expo Go devices.
-  const boardSize = Math.max(240, Math.min(width - 56, 440));
+  const boardSize = Math.min(440, Math.max(160, width - 56));
+  const [screen, setScreen] = useState<Screen>('login');
+  const [playerName, setPlayerName] = useState('');
+  const [nameDraft, setNameDraft] = useState('');
+  const [opponentName, setOpponentName] = useState('Friend');
+  const [mode, setMode] = useState<PlayerMode>('friends');
+  const [difficulty, setDifficulty] = useState<Difficulty>('moderate');
   const [game, setGame] = useState(() => new Chess());
   const [selected, setSelected] = useState<Square | null>(null);
   const [flipped, setFlipped] = useState(false);
-  const [mode, setMode] = useState<PlayerMode>('casual');
-  const [whiteName, setWhiteName] = useState('Player 1');
-  const [blackName, setBlackName] = useState('Player 2');
   const [promotion, setPromotion] = useState<{ from: Square; to: Square; color: 'w' | 'b' } | null>(null);
+  const [nameError, setNameError] = useState('');
 
   const status = useMemo(() => getStatus(game), [game]);
   const history = game.history({ verbose: true });
@@ -65,10 +132,41 @@ export default function App() {
   }
   const ranks = flipped ? [1, 2, 3, 4, 5, 6, 7, 8] : [8, 7, 6, 5, 4, 3, 2, 1];
   const files = flipped ? [...FILES].reverse() : [...FILES];
-  const displayName = (color: 'w' | 'b') => {
-    const name = color === 'w' ? whiteName.trim() : blackName.trim();
-    return name || (color === 'w' ? 'Player 1' : 'Player 2');
-  };
+  const computerThinking = screen === 'game' && mode === 'computer' && game.turn() === 'b' && !status.ended;
+  const humanTurn = mode === 'friends' || game.turn() === 'w';
+
+  useEffect(() => {
+    if (!computerThinking) return undefined;
+    const timer = setTimeout(() => {
+      const next = new Chess(game.fen());
+      const move = chooseComputerMove(next, difficulty);
+      if (move) {
+        next.move({ from: move.from, to: move.to, promotion: move.promotion ?? 'q' });
+        setGame(next);
+        setSelected(null);
+      }
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [computerThinking, difficulty, game]);
+
+  function continueFromLogin() {
+    const cleanedName = nameDraft.trim().replace(/\s+/g, ' ');
+    if (!cleanedName) {
+      setNameError('Enter your name to continue.');
+      return;
+    }
+    setPlayerName(cleanedName.slice(0, 20));
+    setNameError('');
+    setScreen('setup');
+  }
+
+  function startGame() {
+    setGame(new Chess());
+    setSelected(null);
+    setFlipped(false);
+    setPromotion(null);
+    setScreen('game');
+  }
 
   function commitMove(from: Square, to: Square, promoteTo: Promotion = 'q') {
     const next = new Chess(game.fen());
@@ -84,14 +182,11 @@ export default function App() {
   }
 
   function onSquarePress(square: Square) {
-    if (status.ended || promotion) return;
+    if (status.ended || promotion || !humanTurn) return;
     if (selected && legalTargets.has(square)) {
       const move = legalMoves.find((candidate) => candidate.to === square);
-      if (move?.isPromotion()) {
-        setPromotion({ from: selected, to: square, color: game.turn() });
-      } else {
-        commitMove(selected, square);
-      }
+      if (move?.isPromotion()) setPromotion({ from: selected, to: square, color: game.turn() });
+      else commitMove(selected, square);
       return;
     }
     const piece = game.get(square);
@@ -102,61 +197,101 @@ export default function App() {
     if (!history.length) return;
     const next = new Chess(game.fen());
     next.undo();
+    if (mode === 'computer' && next.turn() === 'b' && next.history().length) next.undo();
     setGame(next);
     setSelected(null);
     setPromotion(null);
   }
 
-  function startNewGame() {
-    setGame(new Chess());
-    setSelected(null);
-    setPromotion(null);
+  function displayName(color: 'w' | 'b') {
+    if (mode === 'computer') return color === 'w' ? playerName : 'Chess Bot';
+    return color === 'w' ? playerName : (opponentName.trim() || 'Friend');
+  }
+
+  if (screen === 'login') {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <ScrollView contentContainerStyle={styles.centerScreen} keyboardShouldPersistTaps="handled">
+          <View style={styles.logoLarge}><Text style={styles.logoLargeText}>♞</Text></View>
+          <Text style={styles.welcomeKicker}>WELCOME TO</Text>
+          <Text style={styles.welcomeTitle}>Chess Arena</Text>
+          <Text style={styles.welcomeText}>A little focus. A little strategy. Your next great game starts here.</Text>
+          <View style={styles.loginCard}>
+            <Text style={styles.cardTitle}>What should we call you?</Text>
+            <Text style={styles.cardHint}>Choose a name to show on your side of the board.</Text>
+            <TextInput accessibilityLabel="Your player name" autoCapitalize="words" autoCorrect={false} maxLength={20} onChangeText={(text) => { setNameDraft(text); setNameError(''); }} onSubmitEditing={continueFromLogin} placeholder="Enter your name" placeholderTextColor="#7d8b7f" returnKeyType="go" value={nameDraft} style={styles.loginInput} />
+            {nameError ? <Text style={styles.errorText}>{nameError}</Text> : null}
+            <Pressable accessibilityRole="button" onPress={continueFromLogin} style={styles.primaryButton}><Text style={styles.primaryButtonText}>Continue  →</Text></Pressable>
+          </View>
+          <Text style={styles.localNote}>Local player profile · no password or account required</Text>
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  if (screen === 'setup') {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <ScrollView contentContainerStyle={styles.setupScreen} keyboardShouldPersistTaps="handled">
+          <View style={styles.header}>
+            <View style={styles.logo}><Text style={styles.logoText}>♞</Text></View>
+            <View style={styles.headerCopy}><Text style={styles.kicker}>READY TO PLAY</Text><Text style={styles.title}>Hi, {playerName}!</Text></View>
+            <Pressable accessibilityRole="button" onPress={() => setScreen('login')} style={styles.editNameButton}><Text style={styles.editNameText}>Edit name</Text></Pressable>
+          </View>
+          <Text style={styles.setupHeading}>Choose your opponent</Text>
+          <Text style={styles.setupSubheading}>Play a friend on this device or challenge the computer.</Text>
+          <Pressable accessibilityRole="button" accessibilityState={{ selected: mode === 'friends' }} onPress={() => setMode('friends')} style={[styles.opponentCard, mode === 'friends' && styles.opponentCardActive]}>
+            <View style={styles.opponentIcon}><Text style={styles.opponentIconText}>♟♙</Text></View>
+            <View style={styles.opponentCopy}><Text style={styles.opponentTitle}>Play with a friend</Text><Text style={styles.opponentDescription}>Take turns and pass the phone.</Text></View>
+            <Text style={styles.radio}>{mode === 'friends' ? '●' : '○'}</Text>
+          </Pressable>
+          {mode === 'friends' && (
+            <View style={styles.optionPanel}>
+              <Text style={styles.inputLabel}>FRIEND'S NAME (OPTIONAL)</Text>
+              <TextInput accessibilityLabel="Friend's name" autoCapitalize="words" maxLength={20} onChangeText={setOpponentName} placeholder="Friend" placeholderTextColor="#7d8b7f" value={opponentName} style={styles.nameInput} />
+              <Text style={styles.panelNote}>White moves first. You can play together on one device, offline.</Text>
+            </View>
+          )}
+          <Pressable accessibilityRole="button" accessibilityState={{ selected: mode === 'computer' }} onPress={() => setMode('computer')} style={[styles.opponentCard, mode === 'computer' && styles.opponentCardActive]}>
+            <View style={styles.opponentIcon}><Text style={styles.opponentIconText}>♞</Text></View>
+            <View style={styles.opponentCopy}><Text style={styles.opponentTitle}>Play with computer</Text><Text style={styles.opponentDescription}>Pick a level and test your skills.</Text></View>
+            <Text style={styles.radio}>{mode === 'computer' ? '●' : '○'}</Text>
+          </Pressable>
+          {mode === 'computer' && (
+            <View style={styles.optionPanel}>
+              <Text style={styles.inputLabel}>DIFFICULTY</Text>
+              <View style={styles.difficultyRow}>
+                {(['easy', 'moderate', 'hard'] as Difficulty[]).map((level) => (
+                  <Pressable key={level} accessibilityRole="button" accessibilityState={{ selected: difficulty === level }} onPress={() => setDifficulty(level)} style={[styles.difficultyButton, difficulty === level && styles.difficultyButtonActive]}>
+                    <Text style={[styles.difficultyTitle, difficulty === level && styles.difficultyTitleActive]}>{level[0].toUpperCase() + level.slice(1)}</Text>
+                    <Text style={styles.difficultyCaption}>{level === 'easy' ? 'Casual' : level === 'moderate' ? 'Thoughtful' : 'Challenging'}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              <Text style={styles.panelNote}>You play White. The computer plays Black. Works offline.</Text>
+            </View>
+          )}
+          <Pressable accessibilityRole="button" onPress={startGame} style={styles.startButton}><Text style={styles.startButtonText}>Start game  →</Text></Pressable>
+          <Text style={styles.localNote}>No account or internet required to play.</Text>
+        </ScrollView>
+      </SafeAreaView>
+    );
   }
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <ScrollView contentContainerStyle={styles.screen} showsVerticalScrollIndicator={false}>
+      <ScrollView contentContainerStyle={styles.gameScreen} showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
           <View style={styles.logo}><Text style={styles.logoText}>♞</Text></View>
-          <View style={styles.headerCopy}>
-            <Text style={styles.kicker}>YOUR NEXT GREAT GAME</Text>
-            <Text style={styles.title}>Chess Arena</Text>
-          </View>
-          <View style={styles.offlineBadge}><View style={styles.onlineDot} /><Text style={styles.badgeText}>READY</Text></View>
-        </View>
-
-        <View style={styles.intro}>
-          <Text style={styles.introTitle}>Make your move.</Text>
-          <Text style={styles.introText}>A complete chess game, right here on your phone.</Text>
-        </View>
-
-        <View style={styles.modeCard}>
-          <Text style={styles.label}>CHOOSE YOUR GAME</Text>
-          <View style={styles.modeOptions}>
-            <Pressable accessibilityRole="button" accessibilityState={{ selected: mode === 'casual' }} onPress={() => setMode('casual')} style={[styles.modeButton, mode === 'casual' && styles.modeButtonActive]}>
-              <Text style={[styles.modeTitle, mode === 'casual' && styles.modeTitleActive]}>Quick game</Text>
-              <Text style={[styles.modeCaption, mode === 'casual' && styles.modeCaptionActive]}>Play a casual match</Text>
-            </Pressable>
-            <Pressable accessibilityRole="button" accessibilityState={{ selected: mode === 'friends' }} onPress={() => setMode('friends')} style={[styles.modeButton, mode === 'friends' && styles.modeButtonActive]}>
-              <Text style={[styles.modeTitle, mode === 'friends' && styles.modeTitleActive]}>2 friends</Text>
-              <Text style={[styles.modeCaption, mode === 'friends' && styles.modeCaptionActive]}>Pass the same phone</Text>
-            </Pressable>
-          </View>
-          {mode === 'friends' ? (
-            <View style={styles.nameFields}>
-              <View style={styles.nameField}><Text style={styles.inputLabel}>WHITE</Text><TextInput accessibilityLabel="White player name" value={whiteName} onChangeText={setWhiteName} placeholder="Player 1" placeholderTextColor="#7d8b7f" maxLength={18} returnKeyType="next" style={styles.nameInput} /></View>
-              <View style={styles.nameField}><Text style={styles.inputLabel}>BLACK</Text><TextInput accessibilityLabel="Black player name" value={blackName} onChangeText={setBlackName} placeholder="Player 2" placeholderTextColor="#7d8b7f" maxLength={18} returnKeyType="done" style={styles.nameInput} /></View>
-            </View>
-          ) : (
-            <Text style={styles.modeNote}>Two players take turns on this device. No account or internet required.</Text>
-          )}
+          <View style={styles.headerCopy}><Text style={styles.kicker}>{mode === 'computer' ? `${difficulty.toUpperCase()} COMPUTER` : 'FRIENDLY MATCH'}</Text><Text style={styles.title}>Chess Arena</Text></View>
+          <Pressable accessibilityRole="button" onPress={() => setScreen('setup')} style={styles.editNameButton}><Text style={styles.editNameText}>New match</Text></Pressable>
         </View>
 
         <View style={styles.gameCard}>
           <View style={styles.playerRow}>
             <View style={styles.avatarBlack}><Text style={styles.avatarPiece}>♚</Text></View>
             <View style={styles.playerInfo}><Text numberOfLines={1} style={styles.playerName}>{displayName('b')}</Text><Text style={styles.playerCaption}>BLACK</Text></View>
-            {game.turn() === 'b' && !status.ended && <View style={styles.turnPill}><Text style={styles.turnPillText}>YOUR TURN</Text></View>}
+            {game.turn() === 'b' && !status.ended && <View style={styles.turnPill}><Text style={styles.turnPillText}>{computerThinking ? 'THINKING…' : 'TO MOVE'}</Text></View>}
           </View>
 
           <View style={[styles.board, { width: boardSize, height: boardSize }]}>
@@ -187,19 +322,19 @@ export default function App() {
           <View style={styles.playerRow}>
             <View style={styles.avatarWhite}><Text style={[styles.avatarPiece, styles.avatarWhitePiece]}>♔</Text></View>
             <View style={styles.playerInfo}><Text numberOfLines={1} style={styles.playerName}>{displayName('w')}</Text><Text style={styles.playerCaption}>WHITE</Text></View>
-            {game.turn() === 'w' && !status.ended && <View style={styles.turnPill}><Text style={styles.turnPillText}>YOUR TURN</Text></View>}
+            {game.turn() === 'w' && !status.ended && <View style={styles.turnPill}><Text style={styles.turnPillText}>TO MOVE</Text></View>}
           </View>
         </View>
 
         <View style={styles.statusCard}>
-          <View style={[styles.statusIcon, game.isCheck() && !status.ended && styles.checkIcon]}><Text style={styles.statusIconText}>{status.ended ? '✦' : game.isCheck() ? '!' : '↗'}</Text></View>
-          <View style={styles.statusCopy}><Text style={styles.statusTitle}>{status.title}</Text><Text style={styles.statusDetail}>{status.detail}</Text></View>
+          <View style={[styles.statusIcon, game.isCheck() && !status.ended && styles.checkIcon]}><Text style={styles.statusIconText}>{status.ended ? '✦' : game.isCheck() ? '!' : computerThinking ? '…' : '↗'}</Text></View>
+          <View style={styles.statusCopy}><Text style={styles.statusTitle}>{computerThinking ? 'Computer is thinking' : status.title}</Text><Text style={styles.statusDetail}>{computerThinking ? 'Choosing a move…' : status.detail}</Text></View>
         </View>
 
         <View style={styles.actions}>
-          <Pressable accessibilityRole="button" accessibilityLabel="Undo last move" onPress={undoMove} disabled={!history.length} style={[styles.actionButton, !history.length && styles.disabledButton]}><Text style={styles.actionText}>↶  Undo</Text></Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel="Undo last move" onPress={undoMove} disabled={!history.length || computerThinking} style={[styles.actionButton, (!history.length || computerThinking) && styles.disabledButton]}><Text style={styles.actionText}>↶  Undo</Text></Pressable>
           <Pressable accessibilityRole="button" accessibilityLabel="Flip board" onPress={() => setFlipped((value) => !value)} style={styles.actionButton}><Text style={styles.actionText}>⇅  Flip</Text></Pressable>
-          <Pressable accessibilityRole="button" onPress={startNewGame} style={styles.newGameButton}><Text style={styles.newGameText}>＋  New game</Text></Pressable>
+          <Pressable accessibilityRole="button" onPress={startGame} style={styles.newGameButton}><Text style={styles.newGameText}>＋  Restart</Text></Pressable>
         </View>
 
         <View style={styles.movesCard}>
@@ -237,33 +372,52 @@ export default function App() {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: '#101713' },
-  screen: { alignItems: 'center', paddingHorizontal: 16, paddingTop: 12, paddingBottom: 32 },
-  header: { width: '100%', maxWidth: 472, flexDirection: 'row', alignItems: 'center', marginBottom: 22 },
-  logo: { width: 46, height: 46, borderRadius: 15, backgroundColor: '#d3efaa', alignItems: 'center', justifyContent: 'center' },
-  logoText: { color: '#17221a', fontSize: 30, marginTop: -4 },
-  headerCopy: { flex: 1, marginLeft: 12 },
-  kicker: { color: '#91a092', fontSize: 9, fontWeight: '800', letterSpacing: 1.8 },
-  title: { color: '#f2f1e8', fontSize: 21, fontWeight: '800', marginTop: 2 },
-  offlineBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 20, backgroundColor: '#1d2921' },
-  onlineDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#a9db7a' },
-  badgeText: { color: '#b8c5b7', fontSize: 9, letterSpacing: 1, fontWeight: '800' },
-  intro: { width: '100%', maxWidth: 472, marginBottom: 14 },
-  introTitle: { color: '#f1f2eb', fontSize: 23, fontWeight: '800', letterSpacing: -0.5 },
-  introText: { color: '#95a297', fontSize: 12, marginTop: 4 },
-  modeCard: { width: '100%', maxWidth: 472, backgroundColor: '#19231c', borderRadius: 19, padding: 14, marginBottom: 12 },
-  label: { color: '#91a092', fontSize: 9, fontWeight: '800', letterSpacing: 1.5, marginBottom: 10 },
-  modeOptions: { flexDirection: 'row', gap: 8 },
-  modeButton: { flex: 1, minHeight: 55, justifyContent: 'center', borderRadius: 12, paddingHorizontal: 11, backgroundColor: '#202c23', borderWidth: 1, borderColor: 'transparent' },
-  modeButtonActive: { backgroundColor: '#2b3a2c', borderColor: '#66814f' },
-  modeTitle: { color: '#dce3d8', fontSize: 12, fontWeight: '800' },
-  modeTitleActive: { color: '#d3efaa' },
-  modeCaption: { color: '#89978b', fontSize: 9, marginTop: 3 },
-  modeCaptionActive: { color: '#b3c3ad' },
-  modeNote: { color: '#91a092', fontSize: 10, lineHeight: 15, marginTop: 10 },
-  nameFields: { flexDirection: 'row', gap: 10, marginTop: 12 },
-  nameField: { flex: 1 },
-  inputLabel: { color: '#89978b', fontSize: 8, fontWeight: '800', letterSpacing: 1.2, marginBottom: 5 },
-  nameInput: { height: 39, borderRadius: 10, borderWidth: 1, borderColor: '#344238', backgroundColor: '#121b15', color: '#f1f2eb', paddingHorizontal: 10, fontSize: 12 },
+  centerScreen: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24, paddingVertical: 36 },
+  setupScreen: { flexGrow: 1, alignItems: 'center', paddingHorizontal: 16, paddingTop: 16, paddingBottom: 30 },
+  gameScreen: { alignItems: 'center', paddingHorizontal: 16, paddingTop: 12, paddingBottom: 32 },
+  logoLarge: { width: 76, height: 76, borderRadius: 24, backgroundColor: '#d3efaa', alignItems: 'center', justifyContent: 'center', marginBottom: 24 },
+  logoLargeText: { color: '#17221a', fontSize: 50, marginTop: -7 },
+  welcomeKicker: { color: '#9bab9b', fontSize: 10, fontWeight: '900', letterSpacing: 2.4 },
+  welcomeTitle: { color: '#f2f1e8', fontSize: 34, fontWeight: '900', marginTop: 6 },
+  welcomeText: { color: '#98a69a', fontSize: 13, textAlign: 'center', lineHeight: 20, maxWidth: 300, marginTop: 10, marginBottom: 26 },
+  loginCard: { width: '100%', maxWidth: 400, padding: 18, borderRadius: 20, backgroundColor: '#19231c' },
+  cardTitle: { color: '#f1f2eb', fontSize: 16, fontWeight: '800' },
+  cardHint: { color: '#94a197', fontSize: 11, lineHeight: 16, marginTop: 5, marginBottom: 14 },
+  loginInput: { height: 48, borderRadius: 12, borderWidth: 1, borderColor: '#344238', backgroundColor: '#121b15', color: '#f1f2eb', paddingHorizontal: 13, fontSize: 14 },
+  errorText: { color: '#f29b82', fontSize: 11, marginTop: 7 },
+  primaryButton: { minHeight: 48, borderRadius: 13, backgroundColor: '#d3efaa', alignItems: 'center', justifyContent: 'center', marginTop: 13 },
+  primaryButtonText: { color: '#1b281d', fontSize: 13, fontWeight: '900' },
+  localNote: { color: '#748277', fontSize: 10, textAlign: 'center', marginTop: 17 },
+  header: { width: '100%', maxWidth: 472, flexDirection: 'row', alignItems: 'center', marginBottom: 21 },
+  logo: { width: 44, height: 44, borderRadius: 14, backgroundColor: '#d3efaa', alignItems: 'center', justifyContent: 'center' },
+  logoText: { color: '#17221a', fontSize: 29, marginTop: -4 },
+  headerCopy: { flex: 1, marginLeft: 11 },
+  kicker: { color: '#91a092', fontSize: 8, fontWeight: '900', letterSpacing: 1.5 },
+  title: { color: '#f2f1e8', fontSize: 19, fontWeight: '900', marginTop: 2 },
+  editNameButton: { minHeight: 36, justifyContent: 'center', paddingHorizontal: 11, borderRadius: 11, backgroundColor: '#202c23' },
+  editNameText: { color: '#d3efaa', fontSize: 10, fontWeight: '800' },
+  setupHeading: { width: '100%', maxWidth: 472, color: '#f1f2eb', fontSize: 24, fontWeight: '900', marginTop: 6 },
+  setupSubheading: { width: '100%', maxWidth: 472, color: '#95a297', fontSize: 12, marginTop: 5, marginBottom: 18 },
+  opponentCard: { width: '100%', maxWidth: 472, minHeight: 75, flexDirection: 'row', alignItems: 'center', padding: 13, marginBottom: 8, borderRadius: 17, backgroundColor: '#19231c', borderWidth: 1, borderColor: '#19231c' },
+  opponentCardActive: { borderColor: '#78925d', backgroundColor: '#202d22' },
+  opponentIcon: { width: 43, height: 43, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: '#2c3c2d' },
+  opponentIconText: { color: '#d3efaa', fontSize: 21 },
+  opponentCopy: { flex: 1, marginLeft: 11 },
+  opponentTitle: { color: '#f0f1e9', fontSize: 13, fontWeight: '900' },
+  opponentDescription: { color: '#94a197', fontSize: 10, marginTop: 4 },
+  radio: { color: '#d3efaa', fontSize: 19, paddingHorizontal: 4 },
+  optionPanel: { width: '100%', maxWidth: 472, padding: 14, marginBottom: 12, borderRadius: 15, backgroundColor: '#19231c' },
+  inputLabel: { color: '#89978b', fontSize: 8, fontWeight: '900', letterSpacing: 1.2, marginBottom: 7 },
+  nameInput: { height: 41, borderRadius: 10, borderWidth: 1, borderColor: '#344238', backgroundColor: '#121b15', color: '#f1f2eb', paddingHorizontal: 11, fontSize: 12 },
+  panelNote: { color: '#829084', fontSize: 10, lineHeight: 15, marginTop: 9 },
+  difficultyRow: { flexDirection: 'row', gap: 7 },
+  difficultyButton: { flex: 1, minHeight: 54, justifyContent: 'center', alignItems: 'center', borderRadius: 11, backgroundColor: '#202c23', borderWidth: 1, borderColor: 'transparent' },
+  difficultyButtonActive: { backgroundColor: '#2b3a2c', borderColor: '#78925d' },
+  difficultyTitle: { color: '#dce3d8', fontSize: 10, fontWeight: '900' },
+  difficultyTitleActive: { color: '#d3efaa' },
+  difficultyCaption: { color: '#89978b', fontSize: 8, marginTop: 4 },
+  startButton: { width: '100%', maxWidth: 472, minHeight: 49, borderRadius: 14, backgroundColor: '#d3efaa', alignItems: 'center', justifyContent: 'center', marginTop: 8 },
+  startButtonText: { color: '#1b281d', fontSize: 13, fontWeight: '900' },
   gameCard: { width: '100%', maxWidth: 472, alignItems: 'center', backgroundColor: '#19231c', borderRadius: 23, paddingVertical: 10, paddingHorizontal: 12 },
   playerRow: { width: '100%', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 4, paddingVertical: 7 },
   avatarBlack: { width: 35, height: 35, borderRadius: 12, backgroundColor: '#39453b', alignItems: 'center', justifyContent: 'center' },
@@ -274,7 +428,7 @@ const styles = StyleSheet.create({
   playerName: { color: '#f0f1e9', fontSize: 12, fontWeight: '800' },
   playerCaption: { color: '#89978b', fontSize: 8, marginTop: 2, letterSpacing: 1 },
   turnPill: { backgroundColor: '#2c3c2d', borderRadius: 8, paddingVertical: 6, paddingHorizontal: 9 },
-  turnPillText: { color: '#c4e6a3', fontSize: 8, fontWeight: '900', letterSpacing: 0.8 },
+  turnPillText: { color: '#c4e6a3', fontSize: 8, fontWeight: '900', letterSpacing: 0.6 },
   board: { overflow: 'hidden', borderRadius: 6, marginVertical: 3, borderWidth: 2, borderColor: '#39483c' },
   rankRow: { flex: 1, flexDirection: 'row' },
   square: { flex: 1, alignItems: 'center', justifyContent: 'center', position: 'relative' },
