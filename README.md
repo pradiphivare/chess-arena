@@ -4,7 +4,7 @@ Chess Arena is an offline React Native and Expo chess game. Enter a player name,
 
 ## Install and run
 
-Use Node.js 20.19.x or newer. From the repository directory, install the dependencies:
+Use Node.js 20.19.x or newer. From the repository directory, install dependencies:
 
 ```bash
 npm install
@@ -12,16 +12,16 @@ npm install
 
 ### Web browser
 
+The app uses Expo's single-page web output (no Expo Router required). Start the dev server:
+
 ```bash
 npx expo start --web --clear
 ```
 
-The web build requires both `react-dom` and `react-native-web`; they are included in this project. If Metro reports a missing package after installing, stop the server, remove `node_modules` and the lockfile, then run `npm install` again.
-
 ### Android with Expo Go
 
 1. Install/update Expo Go from Google Play.
-2. Start the development server on your computer:
+2. Start Metro from the repository root:
    ```bash
    npx expo start --clear
    ```
