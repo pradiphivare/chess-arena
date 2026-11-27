@@ -9,7 +9,8 @@
     "ios": "expo start --ios --clear",
     "web": "expo start --web --clear",
     "typecheck": "tsc --noEmit",
-    "doctor": "npx expo-doctor"
+    "doctor": "expo-doctor",
+    "upgrade:expo": "npx expo install expo@latest && npx expo install --fix && npx expo install react-dom react-native-web"
   },
   "dependencies": {
     "chess.js": "^1.4.0",
